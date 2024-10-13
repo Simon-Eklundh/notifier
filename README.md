@@ -1,5 +1,17 @@
 # notifier
 
+A simple message server which takes a json message on the following format
+```json
+{
+    key: string;
+    message: string;
+    master: boolean;
+    canAnswer: boolean;
+    messageId?: string;
+}
+```
+and passes it on to specific types of clients
+
 To install dependencies:
 
 ```bash

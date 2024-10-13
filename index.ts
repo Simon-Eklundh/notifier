@@ -1,15 +1,24 @@
 import WebSocket from 'ws';
 
+
+interface Message {
+    key: string;
+    message: string;
+    master: boolean;
+    canAnswer: boolean;
+    messageId?: string;
+}
 const wss = new WebSocket.Server({ port: 8080 });
 
 interface WebSocketGroup {
     master: WebSocket | null;
     slaves: WebSocket[];
-    slaveMessageQueue: string[];
-    masterMessageQueue: string[];
+    slaveMessageQueue: Message[];
+    masterMessageQueue: Message[];
+    unansweredMessages: Message[];
 }
 
-const groups = new Map<string, WebSocketGroup>();
+const answeringGroups = new Map<string, WebSocketGroup>();
 const nonAnsweringGroups = new Map<string, WebSocketGroup>();
 
 wss.on('connection', (ws: WebSocket) => {
@@ -28,16 +37,17 @@ wss.on('connection', (ws: WebSocket) => {
                 "key": "key", 
                 "message": "message", 
                 "master": true/false,
-                "canAnswer": true/false
+                "canAnswer": true/false,
+                "messageId"?: "optional, only for answering clients"
             } `);
             return;
         }
         if (canAnswer) {
-            handleAnsweringClients(key, messageText, master, ws);
+            handleAnsweringClients(messageObj, ws);
             return;
         }
         if (!canAnswer) {
-            handleNonAnsweringClients(key, messageText, master, ws);
+            handleNonAnsweringClients(messageObj, ws);
             return
         }
     });
@@ -47,87 +57,140 @@ wss.on('connection', (ws: WebSocket) => {
     });
 });
 
-function handleNonAnsweringClients(key: string, messageText: string, master: boolean, ws: WebSocket) {
-    if (master) {
-        handleNonAnsweringMaster(key, messageText, ws);
+function handleNonAnsweringClients(message: Message, ws: WebSocket) {
+    if (message.master) {
+        handleNonAnsweringMaster(message, ws);
         return;
     }
-    handleNonAnsweringSlave(key, messageText, ws)
+    handleNonAnsweringSlave(message, ws)
 
 }
-function handleNonAnsweringMaster(key: string, messageText: string, ws: WebSocket) {
-    let group = nonAnsweringGroups.get(key);
+function handleNonAnsweringMaster(message: Message, ws: WebSocket) {
+    let group = nonAnsweringGroups.get(message.key);
     if (!group) {
         group = {
             master: ws,
             slaves: [],
             slaveMessageQueue: [],
-            masterMessageQueue: []
+            masterMessageQueue: [],
+            unansweredMessages: []
         }
-        group.masterMessageQueue.push(messageText);
-        nonAnsweringGroups.set(key, group);
-        return;
+        nonAnsweringGroups.set(message.key, group);
     }
-    group.masterMessageQueue.push(messageText);
-    if (group.slaves.length > 0) {
-
-        const messageQueue = group.masterMessageQueue;
-        group.masterMessageQueue = [];
-        messageQueue.push(messageText);
-
-        group.slaves.forEach((slave) => {
-            messageQueue.forEach((message) => {
-                console.log(message.toString());
-                slave.send(message);
-            })
-        });
-
-        return;
-    }
-    group.slaveMessageQueue.push(messageText);
+    group.masterMessageQueue.push(message);
 }
-function handleNonAnsweringSlave(key: string, messageText: string, ws: WebSocket) {
-    let group = nonAnsweringGroups.get(key);
+function handleNonAnsweringSlave(message: Message, ws: WebSocket) {
+    let group = nonAnsweringGroups.get(message.key);
     if (!group) {
         group = {
             master: null,
             slaves: [],
             slaveMessageQueue: [],
-            masterMessageQueue: []
+            masterMessageQueue: [],
+            unansweredMessages: []
         }
-        group.slaves.push(ws);
-        nonAnsweringGroups.set(key, group);
-        return;
+        nonAnsweringGroups.set(message.key, group);
     }
     group.slaves.push(ws);
 }
 
-function handleAnsweringClients(key: string, messageText: string, master: boolean, ws: WebSocket) {
-    throw new Error('Not implemented');
+function handleAnsweringClients(message: Message, ws: WebSocket) {
+    if (message.master) {
+        handleAnsweringMaster(message, ws);
+        return;
+    }
+    handleAnsweringSlave(message, ws)
 
 }
-
-interface Message {
-    key: string;
-    message: string;
-    master: boolean;
-    canAnswer: boolean;
+function handleAnsweringMaster(message: Message, ws: WebSocket) {
+    let group = answeringGroups.get(message.key);
+    if (!group) {
+        group = {
+            master: ws,
+            slaves: [],
+            slaveMessageQueue: [],
+            masterMessageQueue: [],
+            unansweredMessages: []
+        }
+        answeringGroups.set(message.key, group);
+    }
+    group.masterMessageQueue.push(message);
 }
+function handleAnsweringSlave(message: Message, ws: WebSocket) {
+    let group = answeringGroups.get(message.key);
+    if (!group) {
+        group = {
+            master: null,
+            slaves: [],
+            slaveMessageQueue: [],
+            masterMessageQueue: [],
+            unansweredMessages: []
+        }
+        answeringGroups.set(message.key, group);
+    }
+    group.slaves.push(ws);
+    group.slaveMessageQueue.push(message);
+    for (const message of group.unansweredMessages) {
+        ws.send(JSON.stringify(message));
+    }
+}
+
+
 
 function myLoopFunction() {
-    console.log('Looping...');
-    // code to be executed in the loop
+    // sends message from master to all slaves that aren't able to answer.
     nonAnsweringGroups.forEach((group) => {
         if (group.slaves.length === 0) {
             return;
         }
         group.masterMessageQueue.forEach((message) => {
             group.slaves.forEach((slave) => {
-                slave.send(message);
+                slave.send(JSON.stringify(message));
             })
         });
         group.masterMessageQueue = [];
     });
+
+    // listens for message from slaves to master that are able to answer
+    // only if there are any slaves
+    // and and then removes the message from the un answered messages
+    // and sends it to the master
+    // only allowing the first  answer to go through
+    answeringGroups.forEach((group) => {
+        if (group.slaves.length === 0 || group.master === null) {
+            return;
+        }
+        if (group.unansweredMessages.length === 0) {
+            return;
+        }
+        group.slaveMessageQueue.forEach((message) => {
+            const messageId = message.messageId;
+            if (messageId === undefined) {
+                return;
+            }
+            if (!group.unansweredMessages.some(msg => msg.messageId === messageId)) {
+                return;
+            }
+            group.unansweredMessages = group.unansweredMessages.filter((m) => m.messageId !== messageId);
+            group.master!.send(JSON.stringify(message));
+
+        });
+        group.slaveMessageQueue = [];
+    });
+
+    // sends the master's messages to all slaves
+    answeringGroups.forEach((group) => {
+        if (group.slaves.length === 0) {
+            return;
+        }
+        group.masterMessageQueue.forEach((message) => {
+            group.unansweredMessages.push(message);
+            group.slaves.forEach((slave) => {
+                slave.send(JSON.stringify(message));
+            })
+        });
+        group.masterMessageQueue = [];
+    })
 }
 
-setInterval(myLoopFunction, 10000);
+setInterval(myLoopFunction, 1000);
