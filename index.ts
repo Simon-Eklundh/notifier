@@ -26,6 +26,7 @@ wss.on('connection', (ws: WebSocket) => {
 
     ws.on('message', (message: string) => {
         console.log('Received message from client');
+        console.log(message.toString());   
         const messageObj: Message = JSON.parse(message.toString());
         const key = messageObj.key;
         const messageText = messageObj.message;
@@ -128,8 +129,12 @@ function handleAnsweringSlave(message: Message, ws: WebSocket) {
         }
         answeringGroups.set(message.key, group);
     }
-    group.slaves.push(ws);
+ 
     group.slaveMessageQueue.push(message);
+    if(group.slaves.some(slave => slave === ws)) {
+        return
+    }
+    group.slaves.push(ws);
     for (const message of group.unansweredMessages) {
         ws.send(JSON.stringify(message));
     }
@@ -164,14 +169,10 @@ function myLoopFunction() {
             return;
         }
         group.slaveMessageQueue.forEach((message) => {
-            const messageId = message.messageId;
-            if (messageId === undefined) {
+            if (!group.unansweredMessages.some(msg => msg.message === message.message)) {
                 return;
             }
-            if (!group.unansweredMessages.some(msg => msg.messageId === messageId)) {
-                return;
-            }
-            group.unansweredMessages = group.unansweredMessages.filter((m) => m.messageId !== messageId);
+            group.unansweredMessages = group.unansweredMessages.filter((m) => m.message !== message.message);
             group.master!.send(JSON.stringify(message));
 
         });
