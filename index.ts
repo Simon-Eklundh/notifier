@@ -7,6 +7,7 @@ interface Message {
     master: boolean;
     canAnswer: boolean;
     messageId?: string;
+    answer?: string;
 }
 const wss = new WebSocket.Server({ port: 8080 });
 
@@ -39,7 +40,8 @@ wss.on('connection', (ws: WebSocket) => {
                 "message": "message", 
                 "master": true/false,
                 "canAnswer": true/false,
-                "messageId"?: "optional, only for answering clients"
+                "messageId"?: "optional, only for answering clients",
+                "options" : ["answer one", "answer two"]
             } `);
             return;
         }
@@ -115,6 +117,9 @@ function handleAnsweringMaster(message: Message, ws: WebSocket) {
         }
         answeringGroups.set(message.key, group);
     }
+    if(group.master !== ws){
+        group.master = ws;
+    }
     group.masterMessageQueue.push(message);
 }
 function handleAnsweringSlave(message: Message, ws: WebSocket) {
@@ -129,8 +134,12 @@ function handleAnsweringSlave(message: Message, ws: WebSocket) {
         }
         answeringGroups.set(message.key, group);
     }
- 
-    group.slaveMessageQueue.push(message);
+    console.log(message)
+    console.log(message.answer)
+    if(message.answer !== undefined) {
+        group.slaveMessageQueue.push(message);
+        console.log("message pushed to slave queue")
+    }
     if(group.slaves.some(slave => slave === ws)) {
         return
     }
@@ -165,14 +174,10 @@ function myLoopFunction() {
         if (group.slaves.length === 0 || group.master === null) {
             return;
         }
-        if (group.unansweredMessages.length === 0) {
-            return;
-        }
+
         group.slaveMessageQueue.forEach((message) => {
-            if (!group.unansweredMessages.some(msg => msg.message === message.message)) {
-                return;
-            }
             group.unansweredMessages = group.unansweredMessages.filter((m) => m.message !== message.message);
+            console.log("sending message" + message);
             group.master!.send(JSON.stringify(message));
 
         });
